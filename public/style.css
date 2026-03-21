@@ -1,0 +1,91 @@
+:root {
+  --bg: #f0eee7;
+  --card: #fffdf8;
+  --title: #2f1f12;
+  --board-shadow: rgba(47, 31, 18, 0.25);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at top, #faf5e7 0%, var(--bg) 55%, #e3dbc8 100%);
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+.page {
+  text-align: center;
+  padding: 24px;
+  border-radius: 16px;
+  background: var(--card);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+}
+
+h1 {
+  margin: 0 0 16px;
+  font-size: 32px;
+  color: var(--title);
+  letter-spacing: 1px;
+}
+
+#xiangqi-board {
+  width: min(90vw, 540px);
+  height: auto;
+  border: 2px solid #8a5d2f;
+  border-radius: 8px;
+  box-shadow: 0 10px 20px var(--board-shadow);
+  background: #f3d9a4;
+}
+
+.status-panel {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f7efe0;
+  border: 1px solid #e1d2b5;
+}
+
+.status-banner {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  color: #7d2f1d;
+}
+
+.status-line {
+  margin: 8px 0 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #2f1f12;
+}
+
+.status-meta {
+  margin: 8px 0 0;
+  font-size: 17px;
+  color: #5f4a34;
+}
+
+.controls {
+  margin-top: 12px;
+}
+
+#restart-btn {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  background: #b4452a;
+  cursor: pointer;
+}
+
+#restart-btn:disabled {
+  background: #c8b8a8;
+  cursor: not-allowed;
+}

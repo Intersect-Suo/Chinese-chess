@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Xiangqi Online</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <h1>中国象棋在线对战</h1>
+      <canvas id="xiangqi-board" width="540" height="600"></canvas>
+
+      <section class="status-panel" aria-live="polite">
+        <p id="banner-text" class="status-banner">正在连接服务器...</p>
+        <p id="status-text" class="status-line">等待对手加入...</p>
+        <p id="meta-text" class="status-meta">当前回合: 红方 | 你是: 未分配</p>
+      </section>
+
+      <div class="controls">
+        <button id="restart-btn" type="button">重新开始</button>
+      </div>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+  </body>
+</html>
