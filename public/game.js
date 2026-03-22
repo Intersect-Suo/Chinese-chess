@@ -76,6 +76,62 @@
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
 
+  function getGameOverCopy(reason, isWin) {
+    const result = isWin ? '你赢了' : '你输了';
+    const detailByReason = {
+      timeout: isWin ? '对方超时判负' : '你方超时判负',
+      surrender: isWin ? '对手认输' : '你已认输',
+      'capture-general': isWin ? '你已吃掉对方将/帅' : '对方吃掉了你的将/帅'
+    };
+    const detail = detailByReason[reason] || (isWin ? '对局结束' : '本局结束');
+    return {
+      banner: result + '！' + detail,
+      alert: result + '！原因：' + detail
+    };
+  }
+  function getNoticeCopy(type, payload) {
+    if (type === "check") {
+      return payload && payload.sideUnderCheck === mySide
+        ? "提示：将军！你被对方将军。"
+        : "提示：将军！你正在将军对手。";
+    }
+
+    if (type === "undoRequestSent") {
+      return "提示：悔棋请求已发送，等待对方确认。";
+    }
+
+    if (type === "undoApplied") {
+      return "提示：悔棋已生效，棋局状态已同步。";
+    }
+
+    if (type === "undoResult") {
+      return payload && payload.message
+        ? "提示：" + payload.message
+        : "提示：悔棋请求已处理。";
+    }
+
+    if (type === "undoRequestFailed") {
+      const reasonMap = {
+        "undo-pending": "已有悔棋请求待处理",
+        "no-history": "当前局面无法悔棋",
+        "opponent-offline": "对手不在线，无法处理悔棋"
+      };
+      const reason = payload && payload.reason ? (reasonMap[payload.reason] || payload.reason) : "未知原因";
+      return "提示：悔棋请求失败，" + reason + "。";
+    }
+
+    if (type === "restartRequestSent") {
+      return "提示：重新开始请求已发送，等待对方确认。";
+    }
+
+    if (type === "restartResult") {
+      return payload && payload.message
+        ? "提示：" + payload.message
+        : "提示：重新开始请求已处理。";
+    }
+
+    return "提示：操作已完成。";
+  }
   let boardState = cloneBoard(initialBoard);
   let selected = null;
   let currentTurn = 'r';
@@ -455,9 +511,9 @@
         return;
       }
       if (payload.sideUnderCheck === mySide) {
-        bannerText = '将军！你被将军';
+        bannerText = getNoticeCopy("check", payload);
       } else {
-        bannerText = '将军！';
+        bannerText = getNoticeCopy("check", payload);
       }
       render();
     });
@@ -465,24 +521,21 @@
     socket.on('gameOver', (payload) => {
       gameOver = true;
       selected = null;
-      let message = '';
 
-      if (payload.reason === 'timeout') {
-        const isWin = payload.winner === mySide;
-        bannerText = isWin ? '你赢了！对方超时判负' : '你输了！你方超时';
-        message = isWin ? '胜利！对方超时。' : '失败！你已超时。';
-      } else {
-        const isWinByCapture = payload.winner === mySide;
-        bannerText = isWinByCapture ? '你赢了！已吃掉对方将/帅' : '你输了！对方吃掉了你的将/帅';
-        message = isWinByCapture ? '胜利！' : '失败！';
-      }
+      const isWin = payload && payload.winner === mySide;
+      const reason = payload && payload.reason ? payload.reason : 'capture-general';
+      const copy = getGameOverCopy(reason, isWin);
+      bannerText = copy.banner;
 
       updateTurnStatus();
       syncRestartButton();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
+      syncRoomControls();
+      syncControlVisibility();
       render();
-      alert(message);
+      alert(copy.alert);
     });
 
     socket.on('gameReset', (payload) => {
@@ -509,7 +562,7 @@
     });
 
     socket.on('undoRequestSent', () => {
-      bannerText = '悔棋请求已发送，等待对方确认...';
+      bannerText = getNoticeCopy("undoRequestSent");
       render();
     });
 
@@ -530,7 +583,7 @@
       lastMove = payload ? payload.lastMove || null : null;
       selected = null;
       gameOver = false;
-      bannerText = payload && payload.message ? payload.message : '悔棋成功';
+      bannerText = getNoticeCopy("undoApplied", payload);
       updateTurnStatus();
       syncRestartButton();
       syncUndoButton();
@@ -540,17 +593,17 @@
     });
 
     socket.on('undoResult', (payload) => {
-      bannerText = payload && payload.message ? payload.message : '悔棋请求已处理';
+      bannerText = getNoticeCopy("undoResult", payload);
       render();
     });
 
     socket.on('undoRequestFailed', (payload) => {
-      bannerText = `悔棋请求失败: ${payload.reason}`;
+      bannerText = getNoticeCopy("undoRequestFailed", payload);
       render();
     });
 
     socket.on('restartRequestSent', () => {
-      bannerText = '重新开始请求已发送，等待对方确认...';
+      bannerText = getNoticeCopy("restartRequestSent");
       render();
     });
 
@@ -561,7 +614,7 @@
     });
 
     socket.on('restartResult', (payload) => {
-      bannerText = payload && payload.message ? payload.message : '重新开始请求已处理';
+      bannerText = getNoticeCopy("restartResult", payload);
       render();
     });
 
@@ -594,8 +647,9 @@
     socket.on('surrendered', (payload) => {
       gameOver = true;
       selected = null;
-      const iSurrendered = payload && payload.loser === mySide;
-      bannerText = iSurrendered ? '你已认输，判负' : '对手已认输，你获胜';
+      const isWin = payload && payload.winner === mySide;
+      const copy = getGameOverCopy('surrender', isWin);
+      bannerText = copy.banner;
       updateTurnStatus();
       syncRestartButton();
       syncReadyButton();
@@ -604,7 +658,7 @@
       syncRoomControls();
       syncControlVisibility();
       render();
-      alert(iSurrendered ? '你已认输' : '对手认输，你获胜');
+      alert(copy.alert);
     });
 
     socket.on('settingsRejected', (payload) => {
