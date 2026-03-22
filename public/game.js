@@ -201,27 +201,31 @@
   }
 
   function syncControlVisibility() {
-    if (!socket) {
-      if (readyBtn) readyBtn.style.display = 'none';
-      if (restartBtn) restartBtn.style.display = 'inline-block';
-      if (surrenderBtn) surrenderBtn.style.display = 'none';
-      if (undoBtn) undoBtn.style.display = 'inline-block';
-      return;
-    }
+    let preGame = false;
+    let playing = false;
+    let ended = false;
 
-    const inGame = isMatched && gameStarted;
+    if (!socket) {
+      preGame = !gameStarted;
+      playing = gameStarted && !gameOver;
+      ended = gameStarted && gameOver;
+    } else {
+      preGame = isMatched && !gameStarted;
+      playing = isMatched && gameStarted && !gameOver;
+      ended = isMatched && gameStarted && gameOver;
+    }
 
     if (readyBtn) {
-      readyBtn.style.display = inGame ? 'none' : 'inline-block';
-    }
-    if (restartBtn) {
-      restartBtn.style.display = inGame ? 'none' : 'inline-block';
-    }
-    if (surrenderBtn) {
-      surrenderBtn.style.display = inGame ? 'inline-block' : 'none';
+      readyBtn.style.display = preGame ? 'inline-block' : 'none';
     }
     if (undoBtn) {
-      undoBtn.style.display = inGame ? 'inline-block' : 'none';
+      undoBtn.style.display = playing ? 'inline-block' : 'none';
+    }
+    if (surrenderBtn) {
+      surrenderBtn.style.display = playing ? 'inline-block' : 'none';
+    }
+    if (restartBtn) {
+      restartBtn.style.display = ended ? 'inline-block' : 'none';
     }
   }
 
