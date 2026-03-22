@@ -7,6 +7,8 @@ const server = http.createServer(app);
 const io = socketIO(server);
 
 const PORT = process.env.PORT || 3000;
+const VALID_SIDE_PREFERENCES = new Set(['r', 'b', 'random']);
+const VALID_TIME_LIMITS = new Set([null, 30, 60, 120]);
 
 app.use(express.static('public'));
 
@@ -157,7 +159,10 @@ function checkValidMove(piece, startRow, startCol, endRow, endCol, board) {
   } else if (type === 'A') {
     baseValid = absDr === 1 && absDc === 1 && isInsidePalace(side, endRow, endCol);
   } else if (type === 'K') {
-    const isFlyingCapture = targetPiece && targetPiece[1] === 'K' && startCol === endCol && countPiecesBetween(startRow, startCol, endRow, endCol, board) === 0;
+    const isFlyingCapture = targetPiece
+      && targetPiece[1] === 'K'
+      && startCol === endCol
+      && countPiecesBetween(startRow, startCol, endRow, endCol, board) === 0;
     if (isFlyingCapture) {
       baseValid = true;
     } else {
@@ -217,14 +222,172 @@ function isGeneralInCheck(board, defenderSide) {
   return false;
 }
 
+function sanitizeSettings(input, current) {
+  const next = {
+    preferredSide: current.preferredSide,
+    timeLimitSeconds: current.timeLimitSeconds
+  };
+
+  if (input && typeof input.preferredSide === 'string' && VALID_SIDE_PREFERENCES.has(input.preferredSide)) {
+    next.preferredSide = input.preferredSide;
+  }
+
+  if (input && Object.prototype.hasOwnProperty.call(input, 'timeLimitSeconds')) {
+    const parsed = input.timeLimitSeconds === null ? null : Number(input.timeLimitSeconds);
+    if (VALID_TIME_LIMITS.has(parsed)) {
+      next.timeLimitSeconds = parsed;
+    }
+  }
+
+  return next;
+}
+
+function createSnapshot(room) {
+  return {
+    board: cloneBoard(room.board),
+    currentTurn: room.currentTurn,
+    lastMove: room.lastMove ? { ...room.lastMove, from: { ...room.lastMove.from }, to: { ...room.lastMove.to } } : null,
+    gameOver: room.gameOver,
+    turnTimeLeft: room.turnTimeLeft
+  };
+}
+
+function restoreSnapshot(room, snapshot) {
+  room.board = cloneBoard(snapshot.board);
+  room.currentTurn = snapshot.currentTurn;
+  room.lastMove = snapshot.lastMove
+    ? { ...snapshot.lastMove, from: { ...snapshot.lastMove.from }, to: { ...snapshot.lastMove.to } }
+    : null;
+  room.gameOver = snapshot.gameOver;
+  room.turnTimeLeft = snapshot.turnTimeLeft;
+}
+
+function emitTimerUpdate(room) {
+  io.to(room.id).emit('timerUpdate', {
+    enabled: room.settings.timeLimitSeconds !== null,
+    activeSide: room.currentTurn,
+    secondsLeft: room.turnTimeLeft,
+    timeLimitSeconds: room.settings.timeLimitSeconds
+  });
+}
+
+function stopTurnTimer(room) {
+  if (room.timer) {
+    clearInterval(room.timer);
+    room.timer = null;
+  }
+}
+
+function startTurnTimer(room, keepCurrentTime = false) {
+  stopTurnTimer(room);
+
+  if (room.gameOver) {
+    return;
+  }
+
+  const limit = room.settings.timeLimitSeconds;
+  if (limit === null) {
+    room.turnTimeLeft = null;
+    emitTimerUpdate(room);
+    return;
+  }
+
+  if (!keepCurrentTime || typeof room.turnTimeLeft !== 'number' || room.turnTimeLeft <= 0) {
+    room.turnTimeLeft = limit;
+  }
+
+  emitTimerUpdate(room);
+
+  room.timer = setInterval(() => {
+    if (room.gameOver) {
+      stopTurnTimer(room);
+      return;
+    }
+
+    room.turnTimeLeft -= 1;
+    emitTimerUpdate(room);
+
+    if (room.turnTimeLeft > 0) {
+      return;
+    }
+
+    room.gameOver = true;
+    stopTurnTimer(room);
+    const loser = room.currentTurn;
+    const winner = loser === 'r' ? 'b' : 'r';
+    io.to(room.id).emit('gameOver', {
+      winner,
+      loser,
+      reason: 'timeout'
+    });
+  }, 1000);
+}
+
+function resetRoomGameState(room) {
+  room.board = createInitialBoard();
+  room.currentTurn = 'r';
+  room.gameOver = false;
+  room.lastMove = null;
+  room.pendingUndo = null;
+  room.turnTimeLeft = room.settings.timeLimitSeconds;
+  room.history = [createSnapshot(room)];
+}
+
+function broadcastSettings(room) {
+  io.to(room.id).emit('roomSettingsUpdated', {
+    settings: {
+      preferredSide: room.settings.preferredSide,
+      timeLimitSeconds: room.settings.timeLimitSeconds
+    },
+    hostId: room.hostId
+  });
+}
+
+function buildMatchPayload(room, side, isHost) {
+  return {
+    roomId: room.id,
+    side,
+    isHost,
+    currentTurn: room.currentTurn,
+    settings: {
+      preferredSide: room.settings.preferredSide,
+      timeLimitSeconds: room.settings.timeLimitSeconds
+    },
+    board: cloneBoard(room.board),
+    lastMove: room.lastMove
+  };
+}
+
+function getUndoSteps(room, requesterSide) {
+  return room.currentTurn === requesterSide ? 1 : 2;
+}
+
+function applyUndo(room, requesterSide) {
+  const rollbackSteps = getUndoSteps(room, requesterSide);
+  if (room.history.length <= rollbackSteps) {
+    return null;
+  }
+
+  room.history.splice(room.history.length - rollbackSteps, rollbackSteps);
+  const snapshot = room.history[room.history.length - 1];
+  restoreSnapshot(room, snapshot);
+  room.pendingUndo = null;
+  startTurnTimer(room, true);
+
+  return { rollbackSteps, snapshot };
+}
+
 function removeRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room) {
     return;
   }
 
+  stopTurnTimer(room);
+
   const redSocket = room.players.r ? getSocketById(room.players.r) : null;
   const blackSocket = room.players.b ? getSocketById(room.players.b) : null;
+  const waitingSocket = room.waitingPlayerId ? getSocketById(room.waitingPlayerId) : null;
 
   if (redSocket) {
     redSocket.leave(roomId);
@@ -233,6 +396,10 @@ function removeRoom(roomId) {
   if (blackSocket) {
     blackSocket.leave(roomId);
     playerMeta.delete(blackSocket.id);
+  }
+  if (waitingSocket) {
+    waitingSocket.leave(roomId);
+    playerMeta.delete(waitingSocket.id);
   }
 
   rooms.delete(roomId);
@@ -248,66 +415,117 @@ function assignPlayerToRoom(socket) {
 
   if (!waitingRoomId) {
     const roomId = nextRoomId();
-    rooms.set(roomId, {
+    const room = {
       id: roomId,
-      players: { r: socket.id, b: null },
+      hostId: socket.id,
+      waitingPlayerId: socket.id,
+      players: { r: null, b: null },
+      settings: {
+        preferredSide: 'random',
+        timeLimitSeconds: null
+      },
       currentTurn: 'r',
       board: createInitialBoard(),
-      gameOver: false
-    });
+      gameOver: false,
+      lastMove: null,
+      history: [],
+      pendingUndo: null,
+      turnTimeLeft: null,
+      timer: null
+    };
 
+    resetRoomGameState(room);
+
+    rooms.set(roomId, room);
     waitingRoomId = roomId;
+
     socket.join(roomId);
-    playerMeta.set(socket.id, { roomId, side: 'r' });
+    playerMeta.set(socket.id, { roomId, side: null, isHost: true });
 
     socket.emit('matchWaiting', {
       roomId,
-      side: 'r',
-      currentTurn: 'r'
+      side: null,
+      isHost: true,
+      currentTurn: room.currentTurn,
+      settings: room.settings
     });
 
-    console.log(`[Match] ${socket.id} created ${roomId} as red`);
+    console.log(`[Match] ${socket.id} created ${roomId} as host`);
     return;
   }
 
   const room = rooms.get(waitingRoomId);
-  if (!room || room.players.b) {
+  if (!room || room.players.r || room.players.b || !room.waitingPlayerId) {
     waitingRoomId = null;
     assignPlayerToRoom(socket);
     return;
   }
 
-  room.players.b = socket.id;
-  socket.join(room.id);
-  playerMeta.set(socket.id, { roomId: room.id, side: 'b' });
-
-  const redSocket = getSocketById(room.players.r);
-  if (!redSocket) {
+  const hostSocket = getSocketById(room.hostId);
+  if (!hostSocket) {
     removeRoom(room.id);
     assignPlayerToRoom(socket);
     return;
   }
 
-  const payload = {
-    roomId: room.id,
-    currentTurn: room.currentTurn
-  };
+  const hostSide = room.settings.preferredSide === 'random'
+    ? (Math.random() < 0.5 ? 'r' : 'b')
+    : room.settings.preferredSide;
+  const guestSide = hostSide === 'r' ? 'b' : 'r';
 
-  redSocket.emit('matchFound', { ...payload, side: 'r' });
-  socket.emit('matchFound', { ...payload, side: 'b' });
+  room.waitingPlayerId = null;
+  room.players[hostSide] = room.hostId;
+  room.players[guestSide] = socket.id;
+
+  const hostMeta = playerMeta.get(room.hostId);
+  if (hostMeta) {
+    hostMeta.side = hostSide;
+    hostMeta.isHost = true;
+  }
+
+  socket.join(room.id);
+  playerMeta.set(socket.id, { roomId: room.id, side: guestSide, isHost: false });
+
+  resetRoomGameState(room);
+
+  hostSocket.emit('matchFound', buildMatchPayload(room, hostSide, true));
+  socket.emit('matchFound', buildMatchPayload(room, guestSide, false));
   io.to(room.id).emit('turnUpdate', { currentTurn: room.currentTurn });
 
+  startTurnTimer(room);
+
   waitingRoomId = null;
-  console.log(`[Match] ${room.id} started: r=${room.players.r}, b=${room.players.b}`);
+  console.log(`[Match] ${room.id} started: r=${room.players.r}, b=${room.players.b}, limit=${room.settings.timeLimitSeconds}`);
 }
 
 io.on('connection', (socket) => {
   console.log(`[Socket] client connected: ${socket.id}`);
   assignPlayerToRoom(socket);
 
-  socket.on('move', (payload) => {
+  socket.on('updateRoomSettings', (payload) => {
     const meta = playerMeta.get(socket.id);
     if (!meta) {
+      return;
+    }
+
+    const room = rooms.get(meta.roomId);
+    if (!room || room.hostId !== socket.id) {
+      return;
+    }
+
+    if (room.players.r || room.players.b) {
+      socket.emit('settingsRejected', { reason: 'game-already-started' });
+      return;
+    }
+
+    room.settings = sanitizeSettings(payload, room.settings);
+    resetRoomGameState(room);
+    broadcastSettings(room);
+  });
+
+  socket.on('move', (payload) => {
+    const meta = playerMeta.get(socket.id);
+    if (!meta || !meta.side) {
       socket.emit('invalidMove', { reason: 'not-in-room' });
       return;
     }
@@ -315,6 +533,11 @@ io.on('connection', (socket) => {
     const room = rooms.get(meta.roomId);
     if (!room || !room.players.r || !room.players.b) {
       socket.emit('invalidMove', { reason: 'room-not-ready' });
+      return;
+    }
+
+    if (room.pendingUndo) {
+      socket.emit('invalidMove', { reason: 'undo-pending' });
       return;
     }
 
@@ -335,6 +558,7 @@ io.on('connection', (socket) => {
 
     const from = payload.from;
     const to = payload.to;
+
     if (!inBounds(from.row, from.col) || !inBounds(to.row, to.col)) {
       socket.emit('invalidMove', { reason: 'out-of-bounds' });
       return;
@@ -354,6 +578,12 @@ io.on('connection', (socket) => {
     const capturedPiece = room.board[to.row][to.col];
     room.board[to.row][to.col] = movingPiece;
     room.board[from.row][from.col] = null;
+    room.lastMove = {
+      side: meta.side,
+      piece: movingPiece,
+      from,
+      to
+    };
 
     socket.to(meta.roomId).emit('opponentMove', {
       piece: movingPiece,
@@ -362,8 +592,12 @@ io.on('connection', (socket) => {
       captured: capturedPiece || null
     });
 
+    io.to(meta.roomId).emit('lastMoveUpdate', { lastMove: room.lastMove });
+
     if (capturedPiece && capturedPiece[1] === 'K') {
       room.gameOver = true;
+      stopTurnTimer(room);
+      room.history.push(createSnapshot(room));
       io.to(meta.roomId).emit('gameOver', {
         winner: meta.side,
         reason: 'capture-general'
@@ -372,7 +606,11 @@ io.on('connection', (socket) => {
     }
 
     room.currentTurn = room.currentTurn === 'r' ? 'b' : 'r';
+    room.turnTimeLeft = room.settings.timeLimitSeconds;
+    room.history.push(createSnapshot(room));
+
     io.to(meta.roomId).emit('turnUpdate', { currentTurn: room.currentTurn });
+    startTurnTimer(room);
 
     const defenderSide = room.currentTurn;
     if (isGeneralInCheck(room.board, defenderSide)) {
@@ -380,6 +618,107 @@ io.on('connection', (socket) => {
         sideUnderCheck: defenderSide
       });
     }
+  });
+
+  socket.on('requestUndo', () => {
+    const meta = playerMeta.get(socket.id);
+    if (!meta || !meta.side) {
+      return;
+    }
+
+    const room = rooms.get(meta.roomId);
+    if (!room || room.gameOver) {
+      return;
+    }
+
+    if (room.pendingUndo) {
+      socket.emit('undoRequestFailed', { reason: 'undo-pending' });
+      return;
+    }
+
+    const rollbackSteps = getUndoSteps(room, meta.side);
+    if (room.history.length <= rollbackSteps) {
+      socket.emit('undoRequestFailed', { reason: 'no-history' });
+      return;
+    }
+
+    const opponentSide = meta.side === 'r' ? 'b' : 'r';
+    const opponentId = room.players[opponentSide];
+    const opponentSocket = opponentId ? getSocketById(opponentId) : null;
+    if (!opponentSocket) {
+      socket.emit('undoRequestFailed', { reason: 'opponent-offline' });
+      return;
+    }
+
+    room.pendingUndo = {
+      requesterId: socket.id,
+      requesterSide: meta.side,
+      opponentId
+    };
+
+    socket.emit('undoRequestSent');
+    opponentSocket.emit('undoRequested', {
+      requesterSide: meta.side,
+      rollbackSteps
+    });
+  });
+
+  socket.on('respondUndo', (payload) => {
+    const meta = playerMeta.get(socket.id);
+    if (!meta || !meta.side) {
+      return;
+    }
+
+    const room = rooms.get(meta.roomId);
+    if (!room || !room.pendingUndo) {
+      return;
+    }
+
+    if (room.pendingUndo.opponentId !== socket.id) {
+      return;
+    }
+
+    const requesterSocket = getSocketById(room.pendingUndo.requesterId);
+    const accepted = !!(payload && payload.accept);
+
+    if (!accepted) {
+      if (requesterSocket) {
+        requesterSocket.emit('undoResult', {
+          accepted: false,
+          message: '对方拒绝了悔棋请求'
+        });
+      }
+      socket.emit('undoResult', {
+        accepted: false,
+        message: '你已拒绝悔棋'
+      });
+      room.pendingUndo = null;
+      return;
+    }
+
+    const undoResult = applyUndo(room, room.pendingUndo.requesterSide);
+    if (!undoResult) {
+      if (requesterSocket) {
+        requesterSocket.emit('undoResult', {
+          accepted: false,
+          message: '当前局面无法悔棋'
+        });
+      }
+      socket.emit('undoResult', {
+        accepted: false,
+        message: '当前局面无法悔棋'
+      });
+      room.pendingUndo = null;
+      return;
+    }
+
+    io.to(room.id).emit('undoApplied', {
+      rollbackSteps: undoResult.rollbackSteps,
+      board: cloneBoard(room.board),
+      currentTurn: room.currentTurn,
+      lastMove: room.lastMove,
+      message: undoResult.rollbackSteps === 2 ? '悔棋成功，回退到请求方回合前' : '悔棋成功，回退一步'
+    });
   });
 
   socket.on('resetGame', () => {
@@ -393,13 +732,14 @@ io.on('connection', (socket) => {
       return;
     }
 
-    room.board = createInitialBoard();
-    room.currentTurn = 'r';
-    room.gameOver = false;
-
+    resetRoomGameState(room);
     io.to(meta.roomId).emit('gameReset', {
-      currentTurn: room.currentTurn
+      currentTurn: room.currentTurn,
+      board: cloneBoard(room.board),
+      lastMove: room.lastMove,
+      settings: room.settings
     });
+    startTurnTimer(room);
   });
 
   socket.on('disconnect', (reason) => {
@@ -416,9 +756,14 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const opponentId = meta.side === 'r' ? room.players.b : room.players.r;
-    const opponentSocket = opponentId ? getSocketById(opponentId) : null;
+    let opponentId = null;
+    if (room.waitingPlayerId && room.waitingPlayerId === socket.id) {
+      opponentId = null;
+    } else if (meta.side) {
+      opponentId = meta.side === 'r' ? room.players.b : room.players.r;
+    }
 
+    const opponentSocket = opponentId ? getSocketById(opponentId) : null;
     if (opponentSocket) {
       opponentSocket.emit('opponentEscaped');
     }

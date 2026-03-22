@@ -3,6 +3,10 @@
   --card: #fffdf8;
   --title: #2f1f12;
   --board-shadow: rgba(47, 31, 18, 0.25);
+  --primary: #b4452a;
+  --secondary: #6d5845;
+  --panel: #f7efe0;
+  --panel-border: #e1d2b5;
 }
 
 * {
@@ -16,25 +20,27 @@ body {
   place-items: center;
   background: radial-gradient(circle at top, #faf5e7 0%, var(--bg) 55%, #e3dbc8 100%);
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  padding: 20px;
 }
 
 .page {
   text-align: center;
-  padding: 24px;
+  padding: 20px;
   border-radius: 16px;
   background: var(--card);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+  width: min(960px, 100%);
 }
 
 h1 {
-  margin: 0 0 16px;
-  font-size: 32px;
+  margin: 0 0 14px;
+  font-size: clamp(26px, 4vw, 32px);
   color: var(--title);
   letter-spacing: 1px;
 }
 
 #xiangqi-board {
-  width: min(90vw, 540px);
+  width: min(94vw, 540px);
   height: auto;
   border: 2px solid #8a5d2f;
   border-radius: 8px;
@@ -42,12 +48,13 @@ h1 {
   background: #f3d9a4;
 }
 
-.status-panel {
+.status-panel,
+.room-settings {
   margin-top: 14px;
   padding: 12px 14px;
   border-radius: 10px;
-  background: #f7efe0;
-  border: 1px solid #e1d2b5;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
 }
 
 .status-banner {
@@ -64,28 +71,102 @@ h1 {
   color: #2f1f12;
 }
 
-.status-meta {
+.status-meta,
+.status-timer,
+.status-role {
   margin: 8px 0 0;
-  font-size: 17px;
+  font-size: 16px;
   color: #5f4a34;
 }
 
-.controls {
-  margin-top: 12px;
+.room-settings {
+  text-align: left;
 }
 
-#restart-btn {
+.room-settings h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  color: #402815;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.setting-row label {
+  color: #583a22;
+  font-weight: 700;
+}
+
+.setting-row select {
+  border: 1px solid #c5aa82;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 15px;
+  background: #fff9ee;
+  color: #3d2a1c;
+  min-width: 130px;
+}
+
+.controls {
+  margin-top: 14px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+button {
   border: 0;
   border-radius: 8px;
   padding: 10px 16px;
   font-size: 16px;
   font-weight: 700;
   color: #fff;
-  background: #b4452a;
   cursor: pointer;
 }
 
-#restart-btn:disabled {
+#undo-btn {
+  background: var(--secondary);
+}
+
+#restart-btn,
+#apply-settings-btn {
+  background: var(--primary);
+}
+
+button:disabled {
   background: #c8b8a8;
   cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 14px;
+  }
+
+  .status-banner {
+    font-size: 20px;
+  }
+
+  .status-line {
+    font-size: 18px;
+  }
+
+  .setting-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .setting-row select {
+    width: 100%;
+  }
+
+  #apply-settings-btn {
+    width: 100%;
+  }
 }

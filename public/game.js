@@ -2,6 +2,12 @@
   const canvas = document.getElementById('xiangqi-board');
   const ctx = canvas.getContext('2d');
   const restartBtn = document.getElementById('restart-btn');
+  const undoBtn = document.getElementById('undo-btn');
+  const applySettingsBtn = document.getElementById('apply-settings-btn');
+  const sideSelect = document.getElementById('side-select');
+  const timeSelect = document.getElementById('time-select');
+  const roomRoleEl = document.getElementById('room-role-text');
+  const timerEl = document.getElementById('timer-text');
   const bannerEl = document.getElementById('banner-text');
   const statusEl = document.getElementById('status-text');
   const metaEl = document.getElementById('meta-text');
@@ -47,23 +53,70 @@
     return board.map((row) => row.slice());
   }
 
+  function toTimeOptionValue(timeLimitSeconds) {
+    return timeLimitSeconds === null ? 'none' : String(timeLimitSeconds);
+  }
+
+  function fromTimeOptionValue(value) {
+    if (value === 'none') {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  function formatSeconds(seconds) {
+    if (typeof seconds !== 'number') {
+      return '--:--';
+    }
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+
   let boardState = cloneBoard(initialBoard);
   let selected = null;
   let currentTurn = 'r';
   let mySide = null;
   let roomId = null;
   let isMatched = false;
+  let isHost = false;
   let gameOver = false;
   let bannerText = '正在连接服务器...';
   let statusText = '';
+  let lastMove = null;
+  let roomSettings = {
+    preferredSide: 'random',
+    timeLimitSeconds: null
+  };
+  let timerState = {
+    enabled: false,
+    activeSide: 'r',
+    secondsLeft: null,
+    timeLimitSeconds: null
+  };
 
   const socket = typeof io === 'function' ? io() : null;
+
+  function applyServerBoard(board) {
+    if (!Array.isArray(board) || board.length !== ROWS) {
+      return;
+    }
+    boardState = cloneBoard(board);
+  }
 
   function resetLocalBoard() {
     boardState = cloneBoard(initialBoard);
     selected = null;
     currentTurn = 'r';
     gameOver = false;
+    lastMove = null;
+    timerState = {
+      enabled: false,
+      activeSide: 'r',
+      secondsLeft: null,
+      timeLimitSeconds: roomSettings.timeLimitSeconds
+    };
   }
 
   function syncRestartButton() {
@@ -75,6 +128,31 @@
       return;
     }
     restartBtn.disabled = !gameOver;
+  }
+
+  function syncUndoButton() {
+    if (!undoBtn) {
+      return;
+    }
+    if (!socket) {
+      undoBtn.disabled = true;
+      return;
+    }
+    undoBtn.disabled = !isMatched || gameOver || !mySide;
+  }
+
+  function syncRoomControls() {
+    if (!applySettingsBtn || !sideSelect || !timeSelect) {
+      return;
+    }
+
+    sideSelect.value = roomSettings.preferredSide;
+    timeSelect.value = toTimeOptionValue(roomSettings.timeLimitSeconds);
+
+    const canEdit = !!socket && isHost && !isMatched;
+    sideSelect.disabled = !canEdit;
+    timeSelect.disabled = !canEdit;
+    applySettingsBtn.disabled = !canEdit;
   }
 
   function updateTurnStatus() {
@@ -108,6 +186,23 @@
       const sideLabel = mySide ? `你是: ${mySide === 'r' ? '红方' : '黑方'}` : '你是: 未分配';
       metaEl.textContent = `${turnLabel} | ${sideLabel}`;
     }
+
+    if (roomRoleEl) {
+      if (!socket) {
+        roomRoleEl.textContent = '离线模式';
+      } else {
+        roomRoleEl.textContent = isHost ? '你的身份: 房主' : '你的身份: 访客';
+      }
+    }
+
+    if (timerEl) {
+      if (!timerState.enabled) {
+        timerEl.textContent = '计时: 不限时';
+      } else {
+        const sideText = timerState.activeSide === 'r' ? '红方' : '黑方';
+        timerEl.textContent = `计时: ${sideText} ${formatSeconds(timerState.secondsLeft)}`;
+      }
+    }
   }
 
   if (socket) {
@@ -115,33 +210,55 @@
       bannerText = '等待对手加入...';
       updateTurnStatus();
       syncRestartButton();
+      syncUndoButton();
+      syncRoomControls();
       render();
     });
 
     socket.on('matchWaiting', (payload) => {
       roomId = payload.roomId;
-      mySide = payload.side;
-      currentTurn = payload.currentTurn;
+      mySide = payload.side || null;
+      isHost = !!payload.isHost;
+      roomSettings = payload.settings || roomSettings;
+      currentTurn = payload.currentTurn || 'r';
       isMatched = false;
       selected = null;
       gameOver = false;
+      lastMove = null;
       bannerText = '等待对手加入...';
       updateTurnStatus();
       syncRestartButton();
+      syncUndoButton();
+      syncRoomControls();
+      render();
+    });
+
+    socket.on('roomSettingsUpdated', (payload) => {
+      if (payload && payload.settings) {
+        roomSettings = payload.settings;
+      }
+      bannerText = `房间设置更新：${roomSettings.timeLimitSeconds === null ? '不限时' : `${roomSettings.timeLimitSeconds}秒`} / ${roomSettings.preferredSide === 'random' ? '随机阵营' : (roomSettings.preferredSide === 'r' ? '房主红方' : '房主黑方')}`;
+      syncRoomControls();
       render();
     });
 
     socket.on('matchFound', (payload) => {
       roomId = payload.roomId;
       mySide = payload.side;
+      isHost = !!payload.isHost;
+      roomSettings = payload.settings || roomSettings;
       isMatched = true;
       resetLocalBoard();
+      applyServerBoard(payload.board || initialBoard);
+      lastMove = payload.lastMove || null;
       bannerText = '游戏开始，红方走位';
       if (payload.currentTurn) {
         currentTurn = payload.currentTurn;
       }
       updateTurnStatus();
       syncRestartButton();
+      syncUndoButton();
+      syncRoomControls();
       render();
     });
 
@@ -159,14 +276,38 @@
 
       boardState[to.row][to.col] = piece;
       boardState[from.row][from.col] = null;
+      lastMove = {
+        side: piece[0],
+        piece,
+        from,
+        to
+      };
       selected = null;
       updateTurnStatus();
+      render();
+    });
+
+    socket.on('lastMoveUpdate', (payload) => {
+      if (!payload || !payload.lastMove) {
+        return;
+      }
+      lastMove = payload.lastMove;
       render();
     });
 
     socket.on('turnUpdate', (payload) => {
       currentTurn = payload.currentTurn;
       updateTurnStatus();
+      render();
+    });
+
+    socket.on('timerUpdate', (payload) => {
+      timerState = {
+        enabled: !!payload.enabled,
+        activeSide: payload.activeSide || 'r',
+        secondsLeft: payload.secondsLeft,
+        timeLimitSeconds: payload.timeLimitSeconds
+      };
       render();
     });
 
@@ -185,22 +326,84 @@
     socket.on('gameOver', (payload) => {
       gameOver = true;
       selected = null;
-      const isWin = payload.winner === mySide;
-      bannerText = isWin ? '你赢了！已吃掉对方将/帅' : '你输了！对方吃掉了你的将/帅';
+      let message = '';
+
+      if (payload.reason === 'timeout') {
+        const isWin = payload.winner === mySide;
+        bannerText = isWin ? '你赢了！对方超时判负' : '你输了！你方超时';
+        message = isWin ? '胜利！对方超时。' : '失败！你已超时。';
+      } else {
+        const isWinByCapture = payload.winner === mySide;
+        bannerText = isWinByCapture ? '你赢了！已吃掉对方将/帅' : '你输了！对方吃掉了你的将/帅';
+        message = isWinByCapture ? '胜利！' : '失败！';
+      }
+
       updateTurnStatus();
       syncRestartButton();
+      syncUndoButton();
       render();
-      alert(isWin ? '胜利！' : '失败！');
+      alert(message);
     });
 
     socket.on('gameReset', (payload) => {
       resetLocalBoard();
+      applyServerBoard(payload && payload.board ? payload.board : initialBoard);
+      lastMove = payload && payload.lastMove ? payload.lastMove : null;
+      if (payload && payload.settings) {
+        roomSettings = payload.settings;
+      }
       if (payload && payload.currentTurn) {
         currentTurn = payload.currentTurn;
       }
       bannerText = '棋局已重置，红方先行';
       updateTurnStatus();
       syncRestartButton();
+      syncUndoButton();
+      syncRoomControls();
+      render();
+    });
+
+    socket.on('undoRequestSent', () => {
+      bannerText = '悔棋请求已发送，等待对方确认...';
+      render();
+    });
+
+    socket.on('undoRequested', (payload) => {
+      const requesterText = payload.requesterSide === 'r' ? '红方' : '黑方';
+      const message = `${requesterText}请求悔棋，预计回退${payload.rollbackSteps}步，是否同意？`;
+      const accept = window.confirm(message);
+      socket.emit('respondUndo', { accept });
+    });
+
+    socket.on('undoApplied', (payload) => {
+      if (payload && payload.board) {
+        applyServerBoard(payload.board);
+      }
+      if (payload && payload.currentTurn) {
+        currentTurn = payload.currentTurn;
+      }
+      lastMove = payload ? payload.lastMove || null : null;
+      selected = null;
+      gameOver = false;
+      bannerText = payload && payload.message ? payload.message : '悔棋成功';
+      updateTurnStatus();
+      syncRestartButton();
+      syncUndoButton();
+      render();
+    });
+
+    socket.on('undoResult', (payload) => {
+      bannerText = payload && payload.message ? payload.message : '悔棋请求已处理';
+      render();
+    });
+
+    socket.on('undoRequestFailed', (payload) => {
+      bannerText = `悔棋请求失败: ${payload.reason}`;
+      render();
+    });
+
+    socket.on('settingsRejected', (payload) => {
+      bannerText = `房间设置修改失败: ${payload.reason}`;
       render();
     });
 
@@ -213,10 +416,13 @@
       isMatched = false;
       mySide = null;
       roomId = null;
+      isHost = false;
       resetLocalBoard();
-      bannerText = '对手已逃跑，正在重新匹配...';
+      bannerText = '对手已退出，正在重新匹配...';
       updateTurnStatus();
       syncRestartButton();
+      syncUndoButton();
+      syncRoomControls();
       render();
     });
   } else {
@@ -356,7 +562,10 @@
     } else if (type === 'A') {
       baseValid = absDr === 1 && absDc === 1 && isInsidePalace(side, endRow, endCol);
     } else if (type === 'K') {
-      const isFlyingCapture = targetPiece && targetPiece[1] === 'K' && startCol === endCol && countPiecesBetween(startRow, startCol, endRow, endCol, board) === 0;
+      const isFlyingCapture = targetPiece
+        && targetPiece[1] === 'K'
+        && startCol === endCol
+        && countPiecesBetween(startRow, startCol, endRow, endCol, board) === 0;
       if (isFlyingCapture) {
         baseValid = true;
       } else {
@@ -475,6 +684,12 @@
     const captured = boardState[row][col];
     boardState[row][col] = movingPiece;
     boardState[startRow][startCol] = null;
+    lastMove = {
+      side: movingPiece[0],
+      piece: movingPiece,
+      from: { row: startRow, col: startCol },
+      to: { row, col }
+    };
     selected = null;
 
     if (captured && captured[1] === 'K') {
@@ -482,6 +697,7 @@
       bannerText = '你赢了！已吃掉对方将/帅';
       updateTurnStatus();
       syncRestartButton();
+      syncUndoButton();
     } else {
       currentTurn = currentTurn === 'r' ? 'b' : 'r';
       updateTurnStatus();
@@ -579,6 +795,39 @@
     });
   }
 
+  function drawLastMoveHighlightCell(row, col, fillColor, strokeColor) {
+    const x = boardX(col) - CELL / 2 + 2;
+    const y = boardY(row) - CELL / 2 + 2;
+    const size = CELL - 4;
+
+    ctx.fillStyle = fillColor;
+    ctx.fillRect(x, y, size, size);
+
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, size, size);
+  }
+
+  function drawLastMoveMarker(row, col, color) {
+    const x = boardX(col);
+    const y = boardY(row);
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function drawLastMove() {
+    if (!lastMove || !lastMove.from || !lastMove.to) {
+      return;
+    }
+
+    drawLastMoveHighlightCell(lastMove.from.row, lastMove.from.col, 'rgba(255, 173, 84, 0.26)', 'rgba(212, 124, 29, 0.65)');
+    drawLastMoveHighlightCell(lastMove.to.row, lastMove.to.col, 'rgba(255, 206, 120, 0.32)', 'rgba(212, 124, 29, 0.8)');
+    drawLastMoveMarker(lastMove.from.row, lastMove.from.col, '#d76d1b');
+    drawLastMoveMarker(lastMove.to.row, lastMove.to.col, '#8e3b12');
+  }
+
   function drawPiece(code, row, col) {
     const x = boardX(col);
     const y = boardY(row);
@@ -632,6 +881,7 @@
     drawGridLines();
     drawRiver();
     drawPalaceDiagonals();
+    drawLastMove();
     drawPieces();
     drawSelection();
     updateStatusPanel();
@@ -648,13 +898,41 @@
         bannerText = '棋局已重置，红方先行';
         updateTurnStatus();
         syncRestartButton();
+        syncUndoButton();
         render();
       }
+    });
+  }
+
+  if (undoBtn) {
+    undoBtn.addEventListener('click', () => {
+      if (!socket || !roomId || !isMatched || gameOver) {
+        return;
+      }
+      socket.emit('requestUndo');
+    });
+  }
+
+  if (applySettingsBtn) {
+    applySettingsBtn.addEventListener('click', () => {
+      if (!socket || !isHost || isMatched) {
+        return;
+      }
+
+      const preferredSide = sideSelect ? sideSelect.value : 'random';
+      const timeLimitSeconds = timeSelect ? fromTimeOptionValue(timeSelect.value) : null;
+
+      socket.emit('updateRoomSettings', {
+        preferredSide,
+        timeLimitSeconds
+      });
     });
   }
 
   window.checkValidMove = checkValidMove;
   updateTurnStatus();
   syncRestartButton();
+  syncUndoButton();
+  syncRoomControls();
   render();
 })();

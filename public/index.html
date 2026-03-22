@@ -15,9 +15,34 @@
         <p id="banner-text" class="status-banner">正在连接服务器...</p>
         <p id="status-text" class="status-line">等待对手加入...</p>
         <p id="meta-text" class="status-meta">当前回合: 红方 | 你是: 未分配</p>
+        <p id="timer-text" class="status-timer">计时: 不限时</p>
+        <p id="room-role-text" class="status-role">你的身份: 房主</p>
+      </section>
+
+      <section class="room-settings" aria-label="房间设置">
+        <h2>房间设置（房主控制）</h2>
+        <div class="setting-row">
+          <label for="side-select">房主阵营</label>
+          <select id="side-select">
+            <option value="random">随机</option>
+            <option value="r">红方</option>
+            <option value="b">黑方</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="time-select">回合限时</label>
+          <select id="time-select">
+            <option value="none">不限时</option>
+            <option value="30">30秒</option>
+            <option value="60">1分钟</option>
+            <option value="120">2分钟</option>
+          </select>
+        </div>
+        <button id="apply-settings-btn" type="button">应用房间设置</button>
       </section>
 
       <div class="controls">
+        <button id="undo-btn" type="button">悔棋</button>
         <button id="restart-btn" type="button">重新开始</button>
       </div>
     </main>
