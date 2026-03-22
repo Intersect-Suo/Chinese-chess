@@ -148,7 +148,7 @@
       restartBtn.disabled = false;
       return;
     }
-    restartBtn.disabled = !gameOver;
+    restartBtn.disabled = !isMatched || !gameStarted;
   }
 
   function syncReadyButton() {
@@ -312,6 +312,9 @@
       if (!payload) {
         return;
       }
+      if (payload.side) {
+        mySide = payload.side;
+      }
       readyState = payload.ready || readyState;
       gameStarted = !!payload.started;
       updateTurnStatus();
@@ -326,6 +329,9 @@
       gameOver = false;
       readyState = { r: true, b: true };
       selected = null;
+      if (payload && payload.side) {
+        mySide = payload.side;
+      }
       if (payload && payload.board) {
         applyServerBoard(payload.board);
       }
@@ -485,6 +491,46 @@
 
     socket.on('undoRequestFailed', (payload) => {
       bannerText = `悔棋请求失败: ${payload.reason}`;
+      render();
+    });
+
+    socket.on('restartRequestSent', () => {
+      bannerText = '重新开始请求已发送，等待对方确认...';
+      render();
+    });
+
+    socket.on('restartRequested', (payload) => {
+      const requesterText = payload && payload.requesterSide === 'b' ? '黑方' : '红方';
+      const accept = window.confirm(`${requesterText}请求重新开始，是否同意？`);
+      socket.emit('respondRestart', { accept });
+    });
+
+    socket.on('restartResult', (payload) => {
+      bannerText = payload && payload.message ? payload.message : '重新开始请求已处理';
+      render();
+    });
+
+    socket.on('restartApplied', (payload) => {
+      gameStarted = false;
+      gameOver = false;
+      readyState = { r: false, b: false };
+      selected = null;
+      if (payload && payload.board) {
+        applyServerBoard(payload.board);
+      } else {
+        resetLocalBoard();
+      }
+      currentTurn = payload && payload.currentTurn ? payload.currentTurn : 'r';
+      if (payload && payload.settings) {
+        roomSettings = payload.settings;
+      }
+      lastMove = null;
+      bannerText = payload && payload.message ? payload.message : '对局已重置，请重新准备';
+      updateTurnStatus();
+      syncRestartButton();
+      syncReadyButton();
+      syncUndoButton();
+      syncRoomControls();
       render();
     });
 
@@ -986,7 +1032,10 @@
   if (restartBtn) {
     restartBtn.addEventListener('click', () => {
       if (socket && roomId) {
-        socket.emit('resetGame');
+        if (!isMatched || !gameStarted) {
+          return;
+        }
+        socket.emit('requestRestart');
       } else {
         resetLocalBoard();
         bannerText = '棋局已重置，红方先行';

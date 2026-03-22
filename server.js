@@ -389,11 +389,35 @@ function assignSidesByPreference(room) {
   room.ready = { r: false, b: false };
 }
 
+function getSocketSide(room, socketId) {
+  if (room.players.r === socketId) {
+    return 'r';
+  }
+  if (room.players.b === socketId) {
+    return 'b';
+  }
+  return null;
+}
+
 function emitReadyState(room) {
-  io.to(room.id).emit('readyStateUpdate', {
-    started: !!room.started,
-    ready: { ...room.ready }
-  });
+  const redSocket = room.players.r ? getSocketById(room.players.r) : null;
+  const blackSocket = room.players.b ? getSocketById(room.players.b) : null;
+
+  if (redSocket) {
+    redSocket.emit('readyStateUpdate', {
+      side: 'r',
+      started: !!room.started,
+      ready: { ...room.ready }
+    });
+  }
+
+  if (blackSocket) {
+    blackSocket.emit('readyStateUpdate', {
+      side: 'b',
+      started: !!room.started,
+      ready: { ...room.ready }
+    });
+  }
 }
 
 function tryStartGame(room) {
@@ -408,12 +432,28 @@ function tryStartGame(room) {
   room.started = true;
   resetRoomGameState(room);
 
-  io.to(room.id).emit('gameStarted', {
-    board: cloneBoard(room.board),
-    currentTurn: room.currentTurn,
-    lastMove: room.lastMove,
-    settings: room.settings
-  });
+  const redSocket = room.players.r ? getSocketById(room.players.r) : null;
+  const blackSocket = room.players.b ? getSocketById(room.players.b) : null;
+
+  if (redSocket) {
+    redSocket.emit('gameStarted', {
+      side: 'r',
+      board: cloneBoard(room.board),
+      currentTurn: room.currentTurn,
+      lastMove: room.lastMove,
+      settings: room.settings
+    });
+  }
+
+  if (blackSocket) {
+    blackSocket.emit('gameStarted', {
+      side: 'b',
+      board: cloneBoard(room.board),
+      currentTurn: room.currentTurn,
+      lastMove: room.lastMove,
+      settings: room.settings
+    });
+  }
   io.to(room.id).emit('turnUpdate', { currentTurn: room.currentTurn });
   emitReadyState(room);
   startTurnTimer(room);
@@ -496,6 +536,7 @@ function assignPlayerToRoom(socket) {
       lastMove: null,
       history: [],
       pendingUndo: null,
+      pendingRestart: null,
       turnTimeLeft: null,
       timer: null
     };
@@ -598,6 +639,7 @@ io.on('connection', (socket) => {
         guestSocket.emit('matchFound', buildMatchPayload(room, guestMeta.side, false));
       }
 
+      room.pendingRestart = null;
       emitReadyState(room);
     } else {
       resetRoomGameState(room);
@@ -609,7 +651,7 @@ io.on('connection', (socket) => {
 
   socket.on('setReady', () => {
     const meta = playerMeta.get(socket.id);
-    if (!meta || !meta.side) {
+    if (!meta) {
       return;
     }
 
@@ -618,9 +660,98 @@ io.on('connection', (socket) => {
       return;
     }
 
-    room.ready[meta.side] = true;
+    const side = getSocketSide(room, socket.id);
+    if (!side) {
+      return;
+    }
+
+    meta.side = side;
+    room.ready[side] = true;
     emitReadyState(room);
     tryStartGame(room);
+  });
+
+  socket.on('requestRestart', () => {
+    const meta = playerMeta.get(socket.id);
+    if (!meta) {
+      return;
+    }
+
+    const room = rooms.get(meta.roomId);
+    if (!room || !room.started) {
+      return;
+    }
+
+    if (room.pendingRestart) {
+      socket.emit('restartResult', { accepted: false, message: '已有重新开始请求待处理' });
+      return;
+    }
+
+    const mySide = getSocketSide(room, socket.id);
+    if (!mySide) {
+      return;
+    }
+
+    const opponentSide = mySide === 'r' ? 'b' : 'r';
+    const opponentId = room.players[opponentSide];
+    const opponentSocket = opponentId ? getSocketById(opponentId) : null;
+    if (!opponentSocket) {
+      socket.emit('restartResult', { accepted: false, message: '对手不在线，无法重新开始' });
+      return;
+    }
+
+    room.pendingRestart = {
+      requesterId: socket.id,
+      opponentId
+    };
+
+    socket.emit('restartRequestSent');
+    opponentSocket.emit('restartRequested', { requesterSide: mySide });
+  });
+
+  socket.on('respondRestart', (payload) => {
+    const meta = playerMeta.get(socket.id);
+    if (!meta) {
+      return;
+    }
+
+    const room = rooms.get(meta.roomId);
+    if (!room || !room.pendingRestart) {
+      return;
+    }
+
+    if (room.pendingRestart.opponentId !== socket.id) {
+      return;
+    }
+
+    const requesterSocket = getSocketById(room.pendingRestart.requesterId);
+    const accepted = !!(payload && payload.accept);
+
+    if (!accepted) {
+      if (requesterSocket) {
+        requesterSocket.emit('restartResult', { accepted: false, message: '对方拒绝了重新开始请求' });
+      }
+      socket.emit('restartResult', { accepted: false, message: '你已拒绝重新开始' });
+      room.pendingRestart = null;
+      return;
+    }
+
+    room.pendingRestart = null;
+    room.started = false;
+    room.gameOver = false;
+    room.pendingUndo = null;
+    stopTurnTimer(room);
+    resetRoomGameState(room);
+    room.ready = { r: false, b: false };
+
+    io.to(room.id).emit('restartApplied', {
+      board: cloneBoard(room.board),
+      currentTurn: room.currentTurn,
+      lastMove: null,
+      settings: room.settings,
+      message: '对局已重置，请重新准备，等待房主确认设置'
+    });
+    emitReadyState(room);
   });
 
   socket.on('move', (payload) => {
