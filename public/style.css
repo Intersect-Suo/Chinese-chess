@@ -130,6 +130,10 @@ button {
   cursor: pointer;
 }
 
+#ready-btn {
+  background: #2f7a45;
+}
+
 #undo-btn {
   background: var(--secondary);
 }

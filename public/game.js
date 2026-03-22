@@ -2,6 +2,7 @@
   const canvas = document.getElementById('xiangqi-board');
   const ctx = canvas.getContext('2d');
   const restartBtn = document.getElementById('restart-btn');
+  const readyBtn = document.getElementById('ready-btn');
   const undoBtn = document.getElementById('undo-btn');
   const applySettingsBtn = document.getElementById('apply-settings-btn');
   const sideSelect = document.getElementById('side-select');
@@ -81,6 +82,7 @@
   let roomId = null;
   let isMatched = false;
   let isHost = false;
+  let gameStarted = false;
   let gameOver = false;
   let bannerText = '正在连接服务器...';
   let statusText = '';
@@ -95,8 +97,27 @@
     secondsLeft: null,
     timeLimitSeconds: null
   };
+  let readyState = { r: false, b: false };
 
   const socket = typeof io === 'function' ? io() : null;
+
+  function shouldFlipBoard() {
+    return !!socket && isMatched && mySide === 'b';
+  }
+
+  function toViewPos(boardRow, boardCol) {
+    if (!shouldFlipBoard()) {
+      return { row: boardRow, col: boardCol };
+    }
+    return { row: ROWS - 1 - boardRow, col: COLS - 1 - boardCol };
+  }
+
+  function toBoardPos(viewRow, viewCol) {
+    if (!shouldFlipBoard()) {
+      return { row: viewRow, col: viewCol };
+    }
+    return { row: ROWS - 1 - viewRow, col: COLS - 1 - viewCol };
+  }
 
   function applyServerBoard(board) {
     if (!Array.isArray(board) || board.length !== ROWS) {
@@ -130,6 +151,18 @@
     restartBtn.disabled = !gameOver;
   }
 
+  function syncReadyButton() {
+    if (!readyBtn) {
+      return;
+    }
+    if (!socket) {
+      readyBtn.disabled = true;
+      return;
+    }
+    const myReady = mySide ? !!readyState[mySide] : false;
+    readyBtn.disabled = !isMatched || !mySide || gameStarted || myReady || gameOver;
+  }
+
   function syncUndoButton() {
     if (!undoBtn) {
       return;
@@ -138,7 +171,7 @@
       undoBtn.disabled = true;
       return;
     }
-    undoBtn.disabled = !isMatched || gameOver || !mySide;
+    undoBtn.disabled = !isMatched || !gameStarted || gameOver || !mySide;
   }
 
   function syncRoomControls() {
@@ -149,7 +182,7 @@
     sideSelect.value = roomSettings.preferredSide;
     timeSelect.value = toTimeOptionValue(roomSettings.timeLimitSeconds);
 
-    const canEdit = !!socket && isHost && !isMatched;
+    const canEdit = !!socket && isHost && !gameStarted;
     sideSelect.disabled = !canEdit;
     timeSelect.disabled = !canEdit;
     applySettingsBtn.disabled = !canEdit;
@@ -168,6 +201,12 @@
 
     if (!isMatched) {
       statusText = '等待对手加入...';
+      return;
+    }
+
+    if (!gameStarted) {
+      const myReady = mySide ? !!readyState[mySide] : false;
+      statusText = myReady ? '等待对方准备...' : '请准备';
       return;
     }
 
@@ -196,7 +235,7 @@
     }
 
     if (timerEl) {
-      if (!timerState.enabled) {
+      if (!timerState.enabled || !gameStarted) {
         timerEl.textContent = '计时: 不限时';
       } else {
         const sideText = timerState.activeSide === 'r' ? '红方' : '黑方';
@@ -210,6 +249,7 @@
       bannerText = '等待对手加入...';
       updateTurnStatus();
       syncRestartButton();
+      syncReadyButton();
       syncUndoButton();
       syncRoomControls();
       render();
@@ -222,12 +262,15 @@
       roomSettings = payload.settings || roomSettings;
       currentTurn = payload.currentTurn || 'r';
       isMatched = false;
+      gameStarted = false;
+      readyState = payload.ready || { r: false, b: false };
       selected = null;
       gameOver = false;
       lastMove = null;
       bannerText = '等待对手加入...';
       updateTurnStatus();
       syncRestartButton();
+      syncReadyButton();
       syncUndoButton();
       syncRoomControls();
       render();
@@ -248,22 +291,61 @@
       isHost = !!payload.isHost;
       roomSettings = payload.settings || roomSettings;
       isMatched = true;
+      gameStarted = !!payload.started;
+      readyState = payload.ready || { r: false, b: false };
       resetLocalBoard();
       applyServerBoard(payload.board || initialBoard);
       lastMove = payload.lastMove || null;
-      bannerText = '游戏开始，红方走位';
+      bannerText = gameStarted ? '游戏开始，红方走位' : '对手已加入，请准备';
       if (payload.currentTurn) {
         currentTurn = payload.currentTurn;
       }
       updateTurnStatus();
       syncRestartButton();
+      syncReadyButton();
+      syncUndoButton();
+      syncRoomControls();
+      render();
+    });
+
+    socket.on('readyStateUpdate', (payload) => {
+      if (!payload) {
+        return;
+      }
+      readyState = payload.ready || readyState;
+      gameStarted = !!payload.started;
+      updateTurnStatus();
+      syncReadyButton();
+      syncUndoButton();
+      syncRoomControls();
+      render();
+    });
+
+    socket.on('gameStarted', (payload) => {
+      gameStarted = true;
+      gameOver = false;
+      readyState = { r: true, b: true };
+      selected = null;
+      if (payload && payload.board) {
+        applyServerBoard(payload.board);
+      }
+      if (payload && payload.currentTurn) {
+        currentTurn = payload.currentTurn;
+      }
+      if (payload && payload.settings) {
+        roomSettings = payload.settings;
+      }
+      lastMove = payload && payload.lastMove ? payload.lastMove : null;
+      bannerText = '双方已准备，对局开始';
+      updateTurnStatus();
+      syncReadyButton();
       syncUndoButton();
       syncRoomControls();
       render();
     });
 
     socket.on('opponentMove', (payload) => {
-      if (gameOver) {
+      if (gameOver || !gameStarted) {
         return;
       }
 
@@ -312,7 +394,7 @@
     });
 
     socket.on('check', (payload) => {
-      if (gameOver) {
+      if (gameOver || !gameStarted) {
         return;
       }
       if (payload.sideUnderCheck === mySide) {
@@ -340,6 +422,7 @@
 
       updateTurnStatus();
       syncRestartButton();
+      syncReadyButton();
       syncUndoButton();
       render();
       alert(message);
@@ -355,9 +438,12 @@
       if (payload && payload.currentTurn) {
         currentTurn = payload.currentTurn;
       }
+      gameStarted = true;
+      readyState = { r: true, b: true };
       bannerText = '棋局已重置，红方先行';
       updateTurnStatus();
       syncRestartButton();
+      syncReadyButton();
       syncUndoButton();
       syncRoomControls();
       render();
@@ -417,16 +503,20 @@
       mySide = null;
       roomId = null;
       isHost = false;
+      gameStarted = false;
+      readyState = { r: false, b: false };
       resetLocalBoard();
       bannerText = '对手已退出，正在重新匹配...';
       updateTurnStatus();
       syncRestartButton();
+      syncReadyButton();
       syncUndoButton();
       syncRoomControls();
       render();
     });
   } else {
     isMatched = true;
+    gameStarted = true;
     bannerText = '离线模式：双方同屏轮流走子';
     updateTurnStatus();
   }
@@ -610,7 +700,7 @@
     if (!socket) {
       return side === currentTurn;
     }
-    return isMatched && mySide === side && currentTurn === mySide;
+    return isMatched && gameStarted && mySide === side && currentTurn === mySide;
   }
 
   function getBoardPositionFromMouse(event) {
@@ -618,15 +708,15 @@
     const clickX = event.clientX - rect.left;
     const clickY = event.clientY - rect.top;
 
-    const col = Math.round((clickX - OFFSET_X) / CELL);
-    const row = Math.round((clickY - OFFSET_Y) / CELL);
+    const displayCol = Math.round((clickX - OFFSET_X) / CELL);
+    const displayRow = Math.round((clickY - OFFSET_Y) / CELL);
 
-    if (!inBounds(row, col)) {
+    if (!inBounds(displayRow, displayCol)) {
       return null;
     }
 
-    const centerX = boardX(col);
-    const centerY = boardY(row);
+    const centerX = boardX(displayCol);
+    const centerY = boardY(displayRow);
     const dx = clickX - centerX;
     const dy = clickY - centerY;
     const distance = Math.sqrt(dx * dx + dy * dy);
@@ -635,11 +725,11 @@
       return null;
     }
 
-    return { row, col };
+    return toBoardPos(displayRow, displayCol);
   }
 
   function handleCanvasClick(event) {
-    if (gameOver) {
+    if (gameOver || !gameStarted) {
       return;
     }
 
@@ -795,9 +885,10 @@
     });
   }
 
-  function drawLastMoveHighlightCell(row, col, fillColor, strokeColor) {
-    const x = boardX(col) - CELL / 2 + 2;
-    const y = boardY(row) - CELL / 2 + 2;
+  function drawLastMoveHighlightCell(boardRow, boardCol, fillColor, strokeColor) {
+    const view = toViewPos(boardRow, boardCol);
+    const x = boardX(view.col) - CELL / 2 + 2;
+    const y = boardY(view.row) - CELL / 2 + 2;
     const size = CELL - 4;
 
     ctx.fillStyle = fillColor;
@@ -808,9 +899,10 @@
     ctx.strokeRect(x, y, size, size);
   }
 
-  function drawLastMoveMarker(row, col, color) {
-    const x = boardX(col);
-    const y = boardY(row);
+  function drawLastMoveMarker(boardRow, boardCol, color) {
+    const view = toViewPos(boardRow, boardCol);
+    const x = boardX(view.col);
+    const y = boardY(view.row);
     ctx.beginPath();
     ctx.arc(x, y, 8, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -828,9 +920,10 @@
     drawLastMoveMarker(lastMove.to.row, lastMove.to.col, '#8e3b12');
   }
 
-  function drawPiece(code, row, col) {
-    const x = boardX(col);
-    const y = boardY(row);
+  function drawPiece(code, boardRow, boardCol) {
+    const view = toViewPos(boardRow, boardCol);
+    const x = boardX(view.col);
+    const y = boardY(view.row);
     const isRed = code[0] === 'r';
 
     ctx.beginPath();
@@ -865,8 +958,9 @@
       return;
     }
 
-    const x = boardX(selected.col);
-    const y = boardY(selected.row);
+    const view = toViewPos(selected.row, selected.col);
+    const x = boardX(view.col);
+    const y = boardY(view.row);
 
     ctx.beginPath();
     ctx.arc(x, y, PIECE_RADIUS + 6, 0, Math.PI * 2);
@@ -904,9 +998,18 @@
     });
   }
 
+  if (readyBtn) {
+    readyBtn.addEventListener('click', () => {
+      if (!socket || !roomId || !isMatched || gameStarted || gameOver || !mySide) {
+        return;
+      }
+      socket.emit('setReady');
+    });
+  }
+
   if (undoBtn) {
     undoBtn.addEventListener('click', () => {
-      if (!socket || !roomId || !isMatched || gameOver) {
+      if (!socket || !roomId || !isMatched || !gameStarted || gameOver) {
         return;
       }
       socket.emit('requestUndo');
@@ -915,7 +1018,7 @@
 
   if (applySettingsBtn) {
     applySettingsBtn.addEventListener('click', () => {
-      if (!socket || !isHost || isMatched) {
+      if (!socket || !isHost || gameStarted) {
         return;
       }
 
@@ -932,6 +1035,7 @@
   window.checkValidMove = checkValidMove;
   updateTurnStatus();
   syncRestartButton();
+  syncReadyButton();
   syncUndoButton();
   syncRoomControls();
   render();

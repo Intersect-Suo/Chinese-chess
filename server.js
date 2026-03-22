@@ -348,6 +348,8 @@ function buildMatchPayload(room, side, isHost) {
     roomId: room.id,
     side,
     isHost,
+    started: !!room.started,
+    ready: { ...room.ready },
     currentTurn: room.currentTurn,
     settings: {
       preferredSide: room.settings.preferredSide,
@@ -356,6 +358,67 @@ function buildMatchPayload(room, side, isHost) {
     board: cloneBoard(room.board),
     lastMove: room.lastMove
   };
+}
+
+function assignSidesByPreference(room) {
+  if (!room.hostId || !room.guestId) {
+    return;
+  }
+
+  const hostSide = room.settings.preferredSide === 'random'
+    ? (Math.random() < 0.5 ? 'r' : 'b')
+    : room.settings.preferredSide;
+  const guestSide = hostSide === 'r' ? 'b' : 'r';
+
+  room.players = { r: null, b: null };
+  room.players[hostSide] = room.hostId;
+  room.players[guestSide] = room.guestId;
+
+  const hostMeta = playerMeta.get(room.hostId);
+  if (hostMeta) {
+    hostMeta.side = hostSide;
+    hostMeta.isHost = true;
+  }
+
+  const guestMeta = playerMeta.get(room.guestId);
+  if (guestMeta) {
+    guestMeta.side = guestSide;
+    guestMeta.isHost = false;
+  }
+
+  room.ready = { r: false, b: false };
+}
+
+function emitReadyState(room) {
+  io.to(room.id).emit('readyStateUpdate', {
+    started: !!room.started,
+    ready: { ...room.ready }
+  });
+}
+
+function tryStartGame(room) {
+  if (room.started || !room.players.r || !room.players.b) {
+    return false;
+  }
+
+  if (!room.ready.r || !room.ready.b) {
+    return false;
+  }
+
+  room.started = true;
+  resetRoomGameState(room);
+
+  io.to(room.id).emit('gameStarted', {
+    board: cloneBoard(room.board),
+    currentTurn: room.currentTurn,
+    lastMove: room.lastMove,
+    settings: room.settings
+  });
+  io.to(room.id).emit('turnUpdate', { currentTurn: room.currentTurn });
+  emitReadyState(room);
+  startTurnTimer(room);
+
+  return true;
 }
 
 function getUndoSteps() {
@@ -418,12 +481,15 @@ function assignPlayerToRoom(socket) {
     const room = {
       id: roomId,
       hostId: socket.id,
+      guestId: null,
       waitingPlayerId: socket.id,
       players: { r: null, b: null },
       settings: {
         preferredSide: 'random',
         timeLimitSeconds: null
       },
+      ready: { r: false, b: false },
+      started: false,
       currentTurn: 'r',
       board: createInitialBoard(),
       gameOver: false,
@@ -446,11 +512,13 @@ function assignPlayerToRoom(socket) {
       roomId,
       side: null,
       isHost: true,
+      started: false,
+      ready: { r: false, b: false },
       currentTurn: room.currentTurn,
       settings: room.settings
     });
 
-    console.log(`[Match] ${socket.id} created ${roomId} as host`);
+    console.log('[Match] ' + socket.id + ' created ' + roomId + ' as host');
     return;
   }
 
@@ -468,34 +536,27 @@ function assignPlayerToRoom(socket) {
     return;
   }
 
-  const hostSide = room.settings.preferredSide === 'random'
-    ? (Math.random() < 0.5 ? 'r' : 'b')
-    : room.settings.preferredSide;
-  const guestSide = hostSide === 'r' ? 'b' : 'r';
-
   room.waitingPlayerId = null;
-  room.players[hostSide] = room.hostId;
-  room.players[guestSide] = socket.id;
-
-  const hostMeta = playerMeta.get(room.hostId);
-  if (hostMeta) {
-    hostMeta.side = hostSide;
-    hostMeta.isHost = true;
-  }
+  room.guestId = socket.id;
 
   socket.join(room.id);
-  playerMeta.set(socket.id, { roomId: room.id, side: guestSide, isHost: false });
+  playerMeta.set(socket.id, { roomId: room.id, side: null, isHost: false });
 
+  assignSidesByPreference(room);
+  room.started = false;
   resetRoomGameState(room);
+  emitReadyState(room);
+
+  const hostMeta = playerMeta.get(room.hostId);
+  const guestMeta = playerMeta.get(room.guestId);
+  const hostSide = hostMeta ? hostMeta.side : null;
+  const guestSide = guestMeta ? guestMeta.side : null;
 
   hostSocket.emit('matchFound', buildMatchPayload(room, hostSide, true));
   socket.emit('matchFound', buildMatchPayload(room, guestSide, false));
-  io.to(room.id).emit('turnUpdate', { currentTurn: room.currentTurn });
-
-  startTurnTimer(room);
 
   waitingRoomId = null;
-  console.log(`[Match] ${room.id} started: r=${room.players.r}, b=${room.players.b}, limit=${room.settings.timeLimitSeconds}`);
+  console.log('[Match] ' + room.id + ' lobby ready: r=' + room.players.r + ', b=' + room.players.b + ', limit=' + room.settings.timeLimitSeconds);
 }
 
 io.on('connection', (socket) => {
@@ -513,14 +574,53 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (room.players.r || room.players.b) {
+    if (room.started) {
       socket.emit('settingsRejected', { reason: 'game-already-started' });
       return;
     }
 
     room.settings = sanitizeSettings(payload, room.settings);
-    resetRoomGameState(room);
+
+    if (room.guestId) {
+      assignSidesByPreference(room);
+      room.started = false;
+      resetRoomGameState(room);
+
+      const hostSocket = getSocketById(room.hostId);
+      const guestSocket = getSocketById(room.guestId);
+      const hostMeta = playerMeta.get(room.hostId);
+      const guestMeta = playerMeta.get(room.guestId);
+
+      if (hostSocket && hostMeta) {
+        hostSocket.emit('matchFound', buildMatchPayload(room, hostMeta.side, true));
+      }
+      if (guestSocket && guestMeta) {
+        guestSocket.emit('matchFound', buildMatchPayload(room, guestMeta.side, false));
+      }
+
+      emitReadyState(room);
+    } else {
+      resetRoomGameState(room);
+      room.ready = { r: false, b: false };
+    }
+
     broadcastSettings(room);
+  });
+
+  socket.on('setReady', () => {
+    const meta = playerMeta.get(socket.id);
+    if (!meta || !meta.side) {
+      return;
+    }
+
+    const room = rooms.get(meta.roomId);
+    if (!room || room.started || room.gameOver) {
+      return;
+    }
+
+    room.ready[meta.side] = true;
+    emitReadyState(room);
+    tryStartGame(room);
   });
 
   socket.on('move', (payload) => {
@@ -533,6 +633,11 @@ io.on('connection', (socket) => {
     const room = rooms.get(meta.roomId);
     if (!room || !room.players.r || !room.players.b) {
       socket.emit('invalidMove', { reason: 'room-not-ready' });
+      return;
+    }
+
+    if (!room.started) {
+      socket.emit('invalidMove', { reason: 'game-not-started' });
       return;
     }
 
@@ -627,7 +732,7 @@ io.on('connection', (socket) => {
     }
 
     const room = rooms.get(meta.roomId);
-    if (!room || room.gameOver) {
+    if (!room || room.gameOver || !room.started) {
       return;
     }
 
