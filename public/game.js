@@ -3,6 +3,7 @@
   const ctx = canvas.getContext('2d');
   const restartBtn = document.getElementById('restart-btn');
   const readyBtn = document.getElementById('ready-btn');
+  const surrenderBtn = document.getElementById('surrender-btn');
   const undoBtn = document.getElementById('undo-btn');
   const applySettingsBtn = document.getElementById('apply-settings-btn');
   const sideSelect = document.getElementById('side-select');
@@ -174,6 +175,17 @@
     undoBtn.disabled = !isMatched || !gameStarted || gameOver || !mySide;
   }
 
+  function syncSurrenderButton() {
+    if (!surrenderBtn) {
+      return;
+    }
+    if (!socket) {
+      surrenderBtn.disabled = true;
+      return;
+    }
+    surrenderBtn.disabled = !isMatched || !gameStarted || gameOver || !mySide;
+  }
+
   function syncRoomControls() {
     if (!applySettingsBtn || !sideSelect || !timeSelect) {
       return;
@@ -186,6 +198,31 @@
     sideSelect.disabled = !canEdit;
     timeSelect.disabled = !canEdit;
     applySettingsBtn.disabled = !canEdit;
+  }
+
+  function syncControlVisibility() {
+    if (!socket) {
+      if (readyBtn) readyBtn.style.display = 'none';
+      if (restartBtn) restartBtn.style.display = 'inline-block';
+      if (surrenderBtn) surrenderBtn.style.display = 'none';
+      if (undoBtn) undoBtn.style.display = 'inline-block';
+      return;
+    }
+
+    const inGame = isMatched && gameStarted;
+
+    if (readyBtn) {
+      readyBtn.style.display = inGame ? 'none' : 'inline-block';
+    }
+    if (restartBtn) {
+      restartBtn.style.display = inGame ? 'none' : 'inline-block';
+    }
+    if (surrenderBtn) {
+      surrenderBtn.style.display = inGame ? 'inline-block' : 'none';
+    }
+    if (undoBtn) {
+      undoBtn.style.display = inGame ? 'inline-block' : 'none';
+    }
   }
 
   function updateTurnStatus() {
@@ -251,7 +288,9 @@
       syncRestartButton();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
     });
 
@@ -272,7 +311,9 @@
       syncRestartButton();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
     });
 
@@ -304,7 +345,9 @@
       syncRestartButton();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
     });
 
@@ -320,7 +363,9 @@
       updateTurnStatus();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
     });
 
@@ -346,7 +391,9 @@
       updateTurnStatus();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
     });
 
@@ -451,7 +498,9 @@
       syncRestartButton();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
     });
 
@@ -481,6 +530,8 @@
       updateTurnStatus();
       syncRestartButton();
       syncUndoButton();
+      syncSurrenderButton();
+      syncControlVisibility();
       render();
     });
 
@@ -530,8 +581,26 @@
       syncRestartButton();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
+    });
+
+    socket.on('surrendered', (payload) => {
+      gameOver = true;
+      selected = null;
+      const iSurrendered = payload && payload.loser === mySide;
+      bannerText = iSurrendered ? '你已认输，判负' : '对手已认输，你获胜';
+      updateTurnStatus();
+      syncRestartButton();
+      syncReadyButton();
+      syncUndoButton();
+      syncSurrenderButton();
+      syncRoomControls();
+      syncControlVisibility();
+      render();
+      alert(iSurrendered ? '你已认输' : '对手认输，你获胜');
     });
 
     socket.on('settingsRejected', (payload) => {
@@ -557,7 +626,9 @@
       syncRestartButton();
       syncReadyButton();
       syncUndoButton();
+      syncSurrenderButton();
       syncRoomControls();
+      syncControlVisibility();
       render();
     });
   } else {
@@ -1041,8 +1112,10 @@
         bannerText = '棋局已重置，红方先行';
         updateTurnStatus();
         syncRestartButton();
-        syncUndoButton();
-        render();
+      syncUndoButton();
+      syncSurrenderButton();
+      syncControlVisibility();
+      render();
       }
     });
   }
@@ -1062,6 +1135,19 @@
         return;
       }
       socket.emit('requestUndo');
+    });
+  }
+
+  if (surrenderBtn) {
+    surrenderBtn.addEventListener('click', () => {
+      if (!socket || !roomId || !isMatched || !gameStarted || gameOver || !mySide) {
+        return;
+      }
+      const ok = window.confirm('确认认输吗？认输后本局立即结束。');
+      if (!ok) {
+        return;
+      }
+      socket.emit('surrender');
     });
   }
 
@@ -1086,6 +1172,8 @@
   syncRestartButton();
   syncReadyButton();
   syncUndoButton();
-  syncRoomControls();
-  render();
+      syncSurrenderButton();
+      syncRoomControls();
+      syncControlVisibility();
+      render();
 })();

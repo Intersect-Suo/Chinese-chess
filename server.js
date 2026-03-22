@@ -754,6 +754,41 @@ io.on('connection', (socket) => {
     emitReadyState(room);
   });
 
+  socket.on('surrender', () => {
+    const meta = playerMeta.get(socket.id);
+    if (!meta) {
+      return;
+    }
+
+    const room = rooms.get(meta.roomId);
+    if (!room || !room.started || room.gameOver) {
+      return;
+    }
+
+    const loser = getSocketSide(room, socket.id);
+    if (!loser) {
+      return;
+    }
+
+    const winner = loser === 'r' ? 'b' : 'r';
+    room.gameOver = true;
+    room.pendingUndo = null;
+    room.pendingRestart = null;
+    stopTurnTimer(room);
+
+    io.to(room.id).emit('surrendered', {
+      loser,
+      winner,
+      reason: 'surrender'
+    });
+
+    io.to(room.id).emit('gameOver', {
+      winner,
+      loser,
+      reason: 'surrender'
+    });
+  });
+
   socket.on('move', (payload) => {
     const meta = playerMeta.get(socket.id);
     if (!meta || !meta.side) {

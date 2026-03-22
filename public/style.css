@@ -138,6 +138,10 @@ button {
   background: var(--secondary);
 }
 
+#surrender-btn {
+  background: #7e1f26;
+}
+
 #restart-btn,
 #apply-settings-btn {
   background: var(--primary);
