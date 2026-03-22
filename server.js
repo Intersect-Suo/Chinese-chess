@@ -358,12 +358,12 @@ function buildMatchPayload(room, side, isHost) {
   };
 }
 
-function getUndoSteps(room, requesterSide) {
-  return room.currentTurn === requesterSide ? 1 : 2;
+function getUndoSteps() {
+  return 1;
 }
 
-function applyUndo(room, requesterSide) {
-  const rollbackSteps = getUndoSteps(room, requesterSide);
+function applyUndo(room) {
+  const rollbackSteps = getUndoSteps();
   if (room.history.length <= rollbackSteps) {
     return null;
   }
@@ -636,7 +636,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const rollbackSteps = getUndoSteps(room, meta.side);
+    const rollbackSteps = getUndoSteps();
     if (room.history.length <= rollbackSteps) {
       socket.emit('undoRequestFailed', { reason: 'no-history' });
       return;
@@ -696,7 +696,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const undoResult = applyUndo(room, room.pendingUndo.requesterSide);
+    const undoResult = applyUndo(room);
     if (!undoResult) {
       if (requesterSocket) {
         requesterSocket.emit('undoResult', {
